@@ -5,5 +5,4 @@ opencv-python-headless
 segmentation-models-pytorch
 albumentations
 numpy
-Pillow
 requests
