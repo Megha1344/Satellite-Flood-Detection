@@ -7,27 +7,28 @@ import segmentation_models_pytorch as smp
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
-import gdown
+import requests
 
 # ==========================================
-# 1. MODEL DOWNLOAD LOGIC
+# 1. ROBUST MODEL DOWNLOAD (Direct Link Method)
 # ==========================================
 MODEL_SAVE_PATH = "flood_model.pth"
 GOOGLE_DRIVE_FILE_ID = "13iVvRylDH5KeiY26756AAU9poc6M3WaF"
 
 @st.cache_resource
 def prepare_model():
-    # If the file exists but is empty/broken (0 bytes), delete it to redownload
-    if os.path.exists(MODEL_SAVE_PATH) and os.path.getsize(MODEL_SAVE_PATH) < 1000:
-        os.remove(MODEL_SAVE_PATH)
-
-    if not os.path.exists(MODEL_SAVE_PATH):
-        with st.spinner("Downloading AI Model weights from Google Drive..."):
-            url = f'https://drive.google.com/uc?id={GOOGLE_DRIVE_FILE_ID}'
-            # Using fuzzy=True to handle the 'anyone with link' redirect better
-            gdown.download(url, MODEL_SAVE_PATH, quiet=False, fuzzy=True)
+    # If the file is missing or corrupted (0 bytes), download it
+    if not os.path.exists(MODEL_SAVE_PATH) or os.path.getsize(MODEL_SAVE_PATH) < 1000:
+        with st.spinner("Downloading AI Model weights (Initial Setup)... This may take a minute."):
+            # &confirm=t bypasses the 'large file virus scan' warning
+            url = f'https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_FILE_ID}&confirm=t'
+            response = requests.get(url, stream=True)
+            with open(MODEL_SAVE_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
     
-    # Load the ResNet34-Unet
+    # Initialize the U-Net structure (Your exact config)
     model = smp.Unet(
         encoder_name="resnet34", 
         encoder_weights="imagenet", 
@@ -35,8 +36,14 @@ def prepare_model():
         classes=1
     ).to("cpu")
     
+    # Load your trained weights
     if os.path.exists(MODEL_SAVE_PATH):
-        model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location="cpu"))
+        try:
+            state_dict = torch.load(MODEL_SAVE_PATH, map_location="cpu")
+            model.load_state_dict(state_dict)
+        except Exception as e:
+            st.error(f"Error loading model weights: {e}")
+            
     model.eval()
     return model
 
@@ -49,6 +56,7 @@ model = prepare_model()
 DEVICE = "cpu"
 IMAGE_SIZE = 256
 
+# Satellite-specific transforms from your original code
 transforms = A.Compose([
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ToTensorV2(),
@@ -56,6 +64,7 @@ transforms = A.Compose([
 
 def predict_flood(input_img):
     img_rgb = cv2.cvtColor(input_img, cv2.COLOR_BGR2RGB)
+    # Ensure image is exactly 256x256 as per your training
     resized = cv2.resize(img_rgb, (IMAGE_SIZE, IMAGE_SIZE))
     input_tensor = transforms(image=resized)['image'].unsqueeze(0).to(DEVICE)
     
@@ -66,14 +75,16 @@ def predict_flood(input_img):
     return mask
 
 # ==========================================
-# 3. STREAMLIT UI
+# 3. STREAMLIT UI (Web Interface)
 # ==========================================
 st.set_page_config(page_title="AI Flood Detector", layout="wide")
 st.title("🛰️ Satellite Imagery Flood Detection System")
+st.write("Upload a satellite image to detect flooded areas using Deep Learning.")
 
-uploaded_file = st.file_uploader("Upload a Satellite Image", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.file_uploader("Choose a satellite image...", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file is not None:
+    # Convert uploaded file to OpenCV format
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     opencv_image = cv2.imdecode(file_bytes, 1)
     
@@ -84,10 +95,12 @@ if uploaded_file is not None:
     
     with col2:
         st.subheader("AI Prediction")
-        mask_result = predict_flood(opencv_image)
-        st.image(mask_result, caption="AI-detected flooded areas", use_column_width=True)
+        with st.spinner("Analyzing pixels..."):
+            mask_result = predict_flood(opencv_image)
+            st.image(mask_result, caption="White pixels = Flooded Area", use_column_width=True)
 
-st.sidebar.title("System Metrics")
-st.sidebar.info("Model: ResNet34-Unet")
+# Sidebar for Technical Details (Your original metrics)
+st.sidebar.title("Model Information")
+st.sidebar.info("Architecture: ResNet34-Unet")
 st.sidebar.metric("Mean IoU Score", "0.8421")
-st.sidebar.metric("Accuracy", "84.21%")
+st.sidebar.metric("Calculated Accuracy", "84.21%")
